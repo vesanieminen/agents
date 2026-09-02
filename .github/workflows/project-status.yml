@@ -1,0 +1,140 @@
+name: Project status
+
+# Sets the Status field of an issue's card on the user-level project board.
+#
+# Add a label like `status:ready` to an issue and this moves its board item to
+# the matching Status option. The label suffix is matched case-insensitively
+# against the option names on the board, so `status:in progress` -> "In Progress".
+#
+# Projects v2 is GraphQL-only and lives outside the repository, so the default
+# GITHUB_TOKEN cannot write to it. Store a fine-grained PAT with Projects
+# read/write as the PROJECTS_TOKEN secret; the fallback below is there so the
+# default token is at least attempted first.
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Issue number to sync
+        required: true
+      status:
+        description: Status option name (e.g. Ready)
+        required: true
+
+permissions:
+  issues: read
+  contents: read
+
+env:
+  PROJECT_OWNER: vesanieminen
+  PROJECT_NUMBER: "1"
+  STATUS_FIELD: Status
+  LABEL_PREFIX: "status:"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve target status
+        id: target
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          LABEL_NAME: ${{ github.event.label.name }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          INPUT_ISSUE: ${{ inputs.issue }}
+          INPUT_STATUS: ${{ inputs.status }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "issue=$INPUT_ISSUE" >> "$GITHUB_OUTPUT"
+            echo "status=$INPUT_STATUS" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case "$LABEL_NAME" in
+            "$LABEL_PREFIX"*)
+              echo "issue=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
+              echo "status=${LABEL_NAME#"$LABEL_PREFIX"}" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Label '$LABEL_NAME' is not a status label; nothing to do."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+      - name: Set board status
+        if: steps.target.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PROJECTS_TOKEN || github.token }}
+          USING_PAT: ${{ secrets.PROJECTS_TOKEN != '' }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ steps.target.outputs.issue }}
+          TARGET_STATUS: ${{ steps.target.outputs.status }}
+        run: |
+          set -euo pipefail
+
+          if [ "$USING_PAT" = "true" ]; then
+            echo "Authenticating with the PROJECTS_TOKEN secret."
+          else
+            echo "No PROJECTS_TOKEN secret set; falling back to the default GITHUB_TOKEN."
+          fi
+
+          # Look up the project, its Status field, and that field's options.
+          if ! project=$(gh api graphql -f login="$PROJECT_OWNER" -F number="$PROJECT_NUMBER" -f field="$STATUS_FIELD" -f query='
+            query($login: String!, $number: Int!, $field: String!) {
+              user(login: $login) {
+                projectV2(number: $number) {
+                  id
+                  field(name: $field) {
+                    ... on ProjectV2SingleSelectField { id options { id name } }
+                  }
+                }
+              }
+            }' 2>&1); then
+            echo "::error::Could not read project #$PROJECT_NUMBER as $PROJECT_OWNER."
+            echo "$project"
+            if [ "$USING_PAT" != "true" ]; then
+              echo "::error::The default GITHUB_TOKEN is scoped to this repository and cannot reach user-level Projects. Create a fine-grained PAT with Projects read/write and store it as the PROJECTS_TOKEN secret."
+            fi
+            exit 1
+          fi
+
+          project_id=$(jq -r '.data.user.projectV2.id' <<<"$project")
+          field_id=$(jq -r '.data.user.projectV2.field.id' <<<"$project")
+          if [ "$field_id" = "null" ]; then
+            echo "::error::No single-select field named '$STATUS_FIELD' on the board."
+            exit 1
+          fi
+
+          # Match the label suffix against the option names, case-insensitively.
+          option_id=$(jq -r --arg want "$TARGET_STATUS" '
+            .data.user.projectV2.field.options[]
+            | select((.name | ascii_downcase) == ($want | ascii_downcase))
+            | .id' <<<"$project")
+          if [ -z "$option_id" ]; then
+            echo "::error::'$TARGET_STATUS' is not an option on the $STATUS_FIELD field. Available: $(jq -r '[.data.user.projectV2.field.options[].name] | join(", ")' <<<"$project")"
+            exit 1
+          fi
+
+          content_id=$(gh api "repos/$REPO/issues/$ISSUE" --jq .node_id)
+
+          # Adding an item already on the board returns the existing item.
+          item_id=$(gh api graphql -f project="$project_id" -f content="$content_id" -f query='
+            mutation($project: ID!, $content: ID!) {
+              addProjectV2ItemById(input: { projectId: $project, contentId: $content }) {
+                item { id }
+              }
+            }' --jq '.data.addProjectV2ItemById.item.id')
+
+          gh api graphql -f project="$project_id" -f item="$item_id" -f field="$field_id" -f option="$option_id" -f query='
+            mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) {
+              updateProjectV2ItemFieldValue(input: {
+                projectId: $project
+                itemId: $item
+                fieldId: $field
+                value: { singleSelectOptionId: $option }
+              }) { projectV2Item { id } }
+            }' > /dev/null
+
+          echo "Issue #$ISSUE -> $STATUS_FIELD: $TARGET_STATUS"
