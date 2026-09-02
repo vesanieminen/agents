@@ -35,7 +35,7 @@ Zero dependencies. Node 20+.
    Idempotent; rerun any time — it finds what already exists.
 
    ```bash
-   git clone https://github.com/vesanieminen/agents && cd agents/claude-board
+   git clone https://github.com/vesanieminen/claude-board && cd claude-board
    export CLAUDE_BOARD_GITHUB_TOKEN=ghp_...
    node bin/claude-board.js setup
    ```
