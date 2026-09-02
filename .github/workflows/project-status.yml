@@ -8,10 +8,12 @@ name: Project status
 #
 # Projects v2 is GraphQL-only and lives outside the repository. The default
 # GITHUB_TOKEN can READ a public project but every write comes back FORBIDDEN
-# ("Resource not accessible by integration"), so a fine-grained PAT with
-# Projects read/write must be stored as the PROJECTS_TOKEN secret. The
-# fallback below exists so a missing secret fails with a clear message rather
-# than a confusing permissions error.
+# ("Resource not accessible by integration"), so PROJECTS_TOKEN must hold a
+# PAT (classic) with the `project` and `repo` scopes. A fine-grained PAT does
+# not work here: its Projects permission is only offered under the
+# Organizations tab, so a user-owned project cannot be granted at all.
+# The fallback below exists so a missing secret fails with a clear message
+# rather than a confusing permissions error.
 
 on:
   issues:
@@ -87,7 +89,7 @@ jobs:
           # than just surfacing a bare gh error.
           pat_hint() {
             if [ "$USING_PAT" != "true" ]; then
-              echo "::error::The default GITHUB_TOKEN can read a public project but cannot write to one. Create a fine-grained PAT with Projects read/write and store it as the PROJECTS_TOKEN secret."
+              echo "::error::The default GITHUB_TOKEN can read a public project but cannot write to one. Create a PAT (classic) with the 'project' and 'repo' scopes and store it as the PROJECTS_TOKEN secret. A fine-grained PAT will not work for a user-owned project."
             fi
           }
 

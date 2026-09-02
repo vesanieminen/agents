@@ -54,9 +54,14 @@ them yourself:
 
 - **The workflow must be on the default branch.** Workflows triggered by
   `issues` events only run from the default branch.
-- **A `PROJECTS_TOKEN` secret must exist**: a fine-grained PAT with Projects
-  read/write. The split is narrower than the docs suggest and worth knowing
-  exactly, because it was measured on this board rather than assumed:
+- **A `PROJECTS_TOKEN` secret must exist**: a **personal access token
+  (classic)** with the `project` and `repo` scopes. Do not reach for a
+  fine-grained PAT — its Projects permission is exposed only under the
+  *Organizations* tab, so for a user-owned project like this one it cannot be
+  granted, and an account with no organizations has no way to set it at all.
+  The split in what the default token can do is narrower than GitHub's docs
+  suggest, and worth knowing exactly, because it was measured on this board
+  rather than assumed:
 
   - **Reads work** with the default `GITHUB_TOKEN`, because this project is
     public. A run with no secret logs `Read project #1 and its Status field.`
