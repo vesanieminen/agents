@@ -6,10 +6,12 @@ name: Project status
 # the matching Status option. The label suffix is matched case-insensitively
 # against the option names on the board, so `status:in progress` -> "In Progress".
 #
-# Projects v2 is GraphQL-only and lives outside the repository, so the default
-# GITHUB_TOKEN cannot write to it. Store a fine-grained PAT with Projects
-# read/write as the PROJECTS_TOKEN secret; the fallback below is there so the
-# default token is at least attempted first.
+# Projects v2 is GraphQL-only and lives outside the repository. The default
+# GITHUB_TOKEN can READ a public project but every write comes back FORBIDDEN
+# ("Resource not accessible by integration"), so a fine-grained PAT with
+# Projects read/write must be stored as the PROJECTS_TOKEN secret. The
+# fallback below exists so a missing secret fails with a clear message rather
+# than a confusing permissions error.
 
 on:
   issues:
@@ -85,7 +87,7 @@ jobs:
           # than just surfacing a bare gh error.
           pat_hint() {
             if [ "$USING_PAT" != "true" ]; then
-              echo "::error::The default GITHUB_TOKEN is repository-scoped and cannot reach a user-level project. Create a fine-grained PAT with Projects read/write and store it as the PROJECTS_TOKEN secret."
+              echo "::error::The default GITHUB_TOKEN can read a public project but cannot write to one. Create a fine-grained PAT with Projects read/write and store it as the PROJECTS_TOKEN secret."
             fi
           }
 
