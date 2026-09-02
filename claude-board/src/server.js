@@ -1,0 +1,114 @@
+import http from 'node:http';
+import { apply, sweepStale } from './machine.js';
+import { gitInfo } from './git.js';
+import { dashboardHtml } from './dashboard.js';
+
+const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+
+/**
+ * The daemon's HTTP surface:
+ *   POST /event         hook receiver (Claude Code http hooks)
+ *   GET  /              dashboard
+ *   GET  /events        SSE stream of full state
+ *   GET  /api/sessions  JSON
+ *   GET  /health
+ */
+export function createServer({ cfg, store, syncer, log = () => {} }) {
+  const clients = new Set();
+
+  const snapshot = () => ({
+    sessions: store.list(),
+    repo: cfg.repo,
+    projectUrl: syncer.project?.url || '',
+    dryRun: cfg.dryRun,
+  });
+  const broadcast = () => {
+    const data = `data: ${JSON.stringify(snapshot())}\n\n`;
+    for (const res of clients) res.write(data);
+  };
+  syncer.onSynced = () => broadcast();
+
+  const authorized = (req) => {
+    const ip = req.socket.remoteAddress || '';
+    if (LOOPBACK.has(ip)) return true;
+    if (!cfg.bearer) return false;
+    return req.headers.authorization === `Bearer ${cfg.bearer}`;
+  };
+
+  async function handleEvent(req, res, raw) {
+    let ev;
+    try { ev = JSON.parse(raw); } catch { return reply(res, 400, { error: 'invalid JSON' }); }
+    if (!ev?.session_id || !ev?.hook_event_name) return reply(res, 400, { error: 'session_id and hook_event_name required' });
+
+    const surface = String(req.headers['x-claude-board-surface'] || 'local').toLowerCase();
+    ev.__surface = surface === 'cloud' ? 'cloud' : 'local';
+    if (ev.__surface === 'local' && ev.cwd) {
+      const g = await gitInfo(ev.cwd);
+      if (g.branch) ev.__branch = g.branch;
+      if (g.repo) ev.__repo = g.repo;
+    }
+
+    const now = Date.now();
+    const prev = store.get(ev.session_id);
+    const next = apply(prev, ev, now, { needsYou: cfg.needsYou });
+    store.put(next);
+    syncer.markDirty(next.id);
+    broadcast();
+    log(`event: ${ev.hook_event_name}${ev.notification_type ? '/' + ev.notification_type : ''} ${next.id.slice(0, 8)} → ${next.status}`);
+
+    // Board comments reach the agent on its next prompt.
+    if (ev.hook_event_name === 'UserPromptSubmit') {
+      const ctx = await syncer.newComments(next).catch(() => null);
+      if (ctx) return reply(res, 200, { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: `Notes left on your claude-board card:\n\n${ctx}` } });
+    }
+    return reply(res, 200, {});
+  }
+
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://x');
+    if (req.method === 'POST' && url.pathname === '/event') {
+      if (!authorized(req)) return reply(res, 403, { error: 'unauthorized' });
+      let raw = '';
+      req.on('data', c => { raw += c; if (raw.length > 5e6) req.destroy(); });
+      req.on('end', () => handleEvent(req, res, raw).catch(e => { log('event error: ' + e.message); reply(res, 500, { error: e.message }); }));
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/health') return reply(res, 200, { ok: true, sessions: store.list().length, dryRun: cfg.dryRun });
+    if (req.method === 'GET' && url.pathname === '/api/sessions') return reply(res, 200, snapshot());
+    if (req.method === 'GET' && url.pathname === '/events') {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
+      res.write(`data: ${JSON.stringify(snapshot())}\n\n`);
+      clients.add(res);
+      req.on('close', () => clients.delete(res));
+      return;
+    }
+    if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end(dashboardHtml());
+    }
+    reply(res, 404, { error: 'not found' });
+  });
+
+  // Stale sweep once a minute; the Waiting (min) field is refreshed every fifth
+  // sweep so a long Needs-you queue costs one small mutation per session per 5 min.
+  let sweeps = 0;
+  const sweep = setInterval(() => {
+    const now = Date.now();
+    sweeps++;
+    const changed = sweepStale(store.sessions, now, cfg.staleMin * 60000);
+    for (const id of changed) { store.put(store.get(id)); syncer.markDirty(id); log(`stale: ${id.slice(0, 8)}`); }
+    if (sweeps % 5 === 0) for (const s of store.list()) if (s.status === 'needs_you') syncer.markDirty(s.id);
+    store.prune(now, 7 * 24 * 3600 * 1000);
+    if (changed.length) broadcast();
+  }, 60000);
+  sweep.unref?.();
+
+  server.on('close', () => clearInterval(sweep));
+  return server;
+}
+
+function reply(res, code, obj) {
+  const s = JSON.stringify(obj);
+  res.writeHead(code, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(s) });
+  res.end(s);
+}

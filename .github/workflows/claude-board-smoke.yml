@@ -1,0 +1,34 @@
+name: claude-board smoke
+
+# Runs claude-board's end-to-end smoke test against the real GitHub API using
+# the PROJECTS_TOKEN secret (classic PAT, project + repo). Creates or reuses the
+# `claude-board` issues repo and the "Claude sessions" project, walks one
+# synthetic session across every column, verifies, then closes and archives it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep:
+        description: Leave the smoke issue open on the board
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Unit tests
+        working-directory: claude-board
+        run: npm test
+      - name: Smoke test against GitHub
+        working-directory: claude-board
+        env:
+          CLAUDE_BOARD_GITHUB_TOKEN: ${{ secrets.PROJECTS_TOKEN }}
+        run: node test/smoke.js ${{ inputs.keep && '--keep' || '' }}

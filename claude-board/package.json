@@ -1,0 +1,14 @@
+{
+  "name": "claude-board",
+  "version": "0.1.0",
+  "description": "Live Kanban board of your Claude Code sessions: hooks → local daemon → GitHub Projects",
+  "type": "module",
+  "bin": { "claude-board": "./bin/claude-board.js" },
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node bin/claude-board.js serve",
+    "test": "node --test test/*.test.js",
+    "smoke": "node test/smoke.js"
+  },
+  "license": "MIT"
+}
