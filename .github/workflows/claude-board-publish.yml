@@ -1,0 +1,34 @@
+name: claude-board publish
+
+# Copies claude-board/ from this repository into the standalone
+# vesanieminen/claude-board repository (the one `setup` creates for session
+# issues), committing on top of its history so no force-push is needed.
+# Manual only. Uses PROJECTS_TOKEN (classic PAT with repo scope).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sync claude-board/ into vesanieminen/claude-board
+        env:
+          TOKEN: ${{ secrets.PROJECTS_TOKEN }}
+          SRC_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git clone --quiet "https://x-access-token:${TOKEN}@github.com/vesanieminen/claude-board" target
+          rsync -a --delete --exclude .git claude-board/ target/
+          cd target
+          git config user.name "claude-board publish"
+          git config user.email "noreply@github.com"
+          git add -A
+          if git diff --cached --quiet; then echo "already up to date"; exit 0; fi
+          git commit -q -m "Sync from vesanieminen/agents@${SRC_SHA::7}"
+          git push --quiet origin HEAD
+          echo "published $(git rev-parse --short HEAD)"

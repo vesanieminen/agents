@@ -32,12 +32,16 @@ Zero dependencies. Node 20+.
 
 2. **Setup** creates a private `claude-board` issues repo, a "Claude sessions"
    project with the five Status columns and six custom fields, and the labels.
-   Idempotent; rerun any time.
+   Idempotent; rerun any time — it finds what already exists.
 
    ```bash
+   git clone https://github.com/vesanieminen/claude-board && cd claude-board
    export CLAUDE_BOARD_GITHUB_TOKEN=ghp_...
-   npx --yes github:vesanieminen/agents#main --prefix claude-board setup   # or: node bin/claude-board.js setup
+   node bin/claude-board.js setup
    ```
+
+   Optional: `npm link` puts a `claude-board` command on your PATH so the
+   remaining steps drop the `node bin/…` prefix.
 
 3. **Hooks.** Adds `http` hooks for eleven events to `~/.claude/settings.json`
    (backing it up first). New sessions report from their next start.
