@@ -1,84 +1,130 @@
 # CLAUDE.md
 
-Notes for agents working in this repository.
+Notes for agents working in this repository. The point of this file is that you
+can move tickets on the project board without rediscovering how — read
+"Moving a ticket" and follow it.
 
 ## The project board
 
 Issues in this repo feed a **user-level GitHub Project**:
-`https://github.com/users/vesanieminen/projects/1` (project #1, owned by the
-user `vesanieminen`, not by this repository). The board is public.
+`https://github.com/users/vesanieminen/projects/1` — project #1, owned by the
+user `vesanieminen`, not by this repository. It is public.
 
 An **Auto-add to project** workflow is configured on the board for this repo,
-so any issue you create here appears on it automatically, usually within
-seconds. Auto-add is forward-only — it never backfills issues that existed
-before the workflow was turned on.
+so any issue you create here lands on it within seconds. Auto-add is
+forward-only; it never backfills issues that predate it.
 
-## What you can and cannot do
+The `Status` field is a single select with these options, confirmed by writing
+each one:
 
-**You can create and update issues.** Issues are a REST API, served normally by
-the GitHub MCP tools (`mcp__github__issue_write`, `issue_read`, `list_issues`).
-Filing an issue here is the supported way to put a ticket on the board.
+    Backlog · Ready · In progress · In review · Done
 
-**You cannot touch the board directly.** Every Projects v2 operation — reading
-items, reading field option IDs, setting Status, adding an item explicitly — is
-GraphQL-only. There is no REST equivalent; the classic Projects REST API does
-not cover Projects v2. Remote Claude Code sessions have GraphQL blocked at the
-proxy:
+## What is reachable from an agent session
+
+**Issues: yes.** REST, served normally by the GitHub MCP tools
+(`mcp__github__issue_write`, `issue_read`, `list_issues`). Creating an issue is
+how you put a ticket on the board.
+
+**The board directly: no.** Every Projects v2 operation — reading items or
+field options, adding an item, setting Status — is GraphQL-only, and there is
+no REST equivalent (the classic Projects REST API does not cover Projects v2).
+Remote sessions have GraphQL blocked at the proxy:
 
 > This GraphQL query is not enabled for this session — only the pinned set of
 > PR-review operations is served.
 
-This is a transport restriction, not an auth problem. `GITHUB_TOKEN` in the
-session environment is valid and works fine for REST. Do not spend turns
-retrying `curl`, `gh api graphql`, or different queries — mutations are blocked
-along with queries, and the board's visibility has no bearing on it.
+That is a transport restriction, not an auth problem: `GITHUB_TOKEN` in the
+session env is valid and fine for REST. Mutations are blocked along with
+queries, and the board's visibility makes no difference. Do not burn turns
+retrying `curl`, `gh api graphql`, or reworded queries.
 
-**Do not try to read the board over the web either.** It is public, so
-`WebFetch` on the project URL returns 200 instead of 404, but the board is
-client-side rendered: the HTML carries the project title and nothing else. No
-columns, no items. Ask the user what is on the board rather than guessing.
+**Scraping the board over the web: no.** It is public, so `WebFetch` returns
+200 rather than 404, but the page is client-side rendered — you get the project
+title and nothing else. To learn the board's current state, ask the user.
 
-## Moving an item to a status
+## Moving a ticket
 
-Use the label bridge in `.github/workflows/project-status.yml`. Add a label of
-the form `status:<option>` to an issue — `status:ready`, `status:in progress` —
-and the workflow sets that issue's board item to the matching Status option.
-The suffix is matched case-insensitively against the option names on the board,
-and the item is added to the board first if it is not already there.
+`.github/workflows/project-status.yml` does the board write on a GitHub runner,
+which is not behind your proxy and holds a token that can write to the project.
+You reach it through REST, which you do have. Two routes:
 
-This works because labels are REST (so you can set them) while the board write
-happens on a GitHub runner, outside the session proxy that blocks your GraphQL.
+**Route 1 — labels (normal use).** Set a `status:<option>` label on the issue:
 
-Requirements, all of which are the user's to satisfy — you cannot do any of
-them yourself:
+    mcp__github__issue_write(method="update", owner="vesanieminen",
+      repo="agents", issue_number=<n>, labels=["status:in progress"])
 
-- **The workflow must be on the default branch.** Workflows triggered by
-  `issues` events only run from the default branch.
-- **A `PROJECTS_TOKEN` secret must exist**: a **personal access token
-  (classic)** with the `project` and `repo` scopes. Do not reach for a
-  fine-grained PAT — its Projects permission is exposed only under the
-  *Organizations* tab, so for a user-owned project like this one it cannot be
-  granted, and an account with no organizations has no way to set it at all.
-  The split in what the default token can do is narrower than GitHub's docs
-  suggest, and worth knowing exactly, because it was measured on this board
-  rather than assumed:
+The `issues: [labeled]` trigger fires and the workflow sets that issue's card
+to the matching option. Matching is case-insensitive, so `status:in progress`
+finds `In progress`. Labels without the `status:` prefix are ignored. Note that
+`issue_write` **replaces** the label set — include any labels that must survive.
 
-  - **Reads work** with the default `GITHUB_TOKEN`, because this project is
-    public. A run with no secret logs `Read project #1 and its Status field.`
-  - **Writes do not.** `addProjectV2ItemById` returns
-    `{"type":"FORBIDDEN","message":"Resource not accessible by integration"}`.
+**Route 2 — dispatch (testing, or moving without touching labels).**
 
-  So a workflow that only inspects the board may run unauthenticated, but
-  anything that moves an item needs the PAT. The `repository-projects`
-  permission `GITHUB_TOKEN` carries is for the old classic project boards, not
-  Projects v2, and does not help. The workflow falls back to `GITHUB_TOKEN`
-  when the secret is absent and names the failing operation in its log.
+    mcp__github__actions_run_trigger(method="run_workflow", owner="vesanieminen",
+      repo="agents", workflow_id="project-status.yml", ref="main",
+      inputs={"issue": "1", "status": "In review"})
 
-Configuration lives in the `env:` block at the top of the workflow:
-`PROJECT_OWNER`, `PROJECT_NUMBER`, `STATUS_FIELD`, `LABEL_PREFIX`. A
-`workflow_dispatch` trigger takes an issue number and a status name, for
-testing without labeling anything.
+`ref` must be a branch whose copy of the workflow you want to run; the file must
+also exist on the default branch for dispatch to be offered at all.
 
-If a status label produces no movement on the board, read the workflow run log
-before changing anything — it distinguishes a missing token, a missing Status
-field, and a status name that is not one of the board's options.
+**Sequencing matters.** If you fire several transitions at once the runs race
+and last-writer-wins leaves the card somewhere arbitrary. Dispatch one, wait for
+success, then dispatch the next.
+
+## Verifying a run
+
+Use `scripts/wait-for-run.sh <previous-run-id>`, passing the newest run ID from
+*before* your dispatch (or `0`). It blocks until a newer run completes, then
+prints the conclusion and the line the run wrote:
+
+    run #7 (33674530065): success
+    Issue #1 -> Status: In review
+    RUNID=33674530065
+
+Feed that `RUNID` to the next call as `<previous-run-id>`.
+
+Prefer this over `mcp__github__actions_list` for polling: the MCP listing
+returns full commit messages for every run and will eat your context in a few
+calls. It is REST underneath, so it works despite the GraphQL block.
+
+**Log gotcha:** a job log replays the step's shell source before executing it,
+so grepping for `::error::` matches `echo` statements that never ran — a
+successful run will appear to contain errors. The runner wraps those echoed
+source lines in an ANSI colour escape (`\033[36;1m`) and genuine step output
+has none, so filter on the escape. Filtering on unexpanded `$` instead is not
+enough: a literal message with no variables in it survives that test. The
+script already handles this.
+
+On failure, read the log before changing anything: each call reports its own
+name, so the log distinguishes a missing token, a missing `Status` field, an
+unknown status name (it lists the valid options), and a permissions refusal.
+
+## Why it takes a runner at all
+
+Projects v2 addresses everything by opaque node ID, and a single-select field
+cannot be set by the option's name — the write needs four IDs, none guessable:
+project, item, field, option. So every run reads before it writes: query the
+project for its ID, the `Status` field ID and the full option list, match your
+status string against the option names, resolve the issue's `node_id` via REST
+(the join key between the two APIs), call `addProjectV2ItemById` to get the item
+ID (idempotent — it returns the existing card), then
+`updateProjectV2ItemFieldValue` with all four.
+
+Board coordinates are configurable in the workflow's `env:` block:
+`PROJECT_OWNER`, `PROJECT_NUMBER`, `STATUS_FIELD`, `LABEL_PREFIX`.
+
+## Prerequisites (already satisfied — check here if it breaks)
+
+- **The workflow is on the default branch.** `issues`-triggered workflows only
+  run from there.
+- **`PROJECTS_TOKEN` holds a classic PAT** with the `project` and `repo`
+  scopes, as a repository Actions secret. Do not suggest a fine-grained PAT: its
+  Projects permission appears only under the *Organizations* tab, so a
+  user-owned project cannot be granted it at all. The measured split for the
+  default `GITHUB_TOKEN` on this public board is that **reads succeed** and
+  **writes return** `{"type":"FORBIDDEN","message":"Resource not accessible by
+  integration"}`. A run's first log line says which token it used.
+
+Label→status is one-directional: moving a card by hand does not update the
+issue's label, so the two can drift. Closing that loop would need a second
+workflow on `projects_v2_item` events; none exists today.
