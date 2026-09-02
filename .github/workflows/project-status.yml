@@ -6,10 +6,14 @@ name: Project status
 # the matching Status option. The label suffix is matched case-insensitively
 # against the option names on the board, so `status:in progress` -> "In Progress".
 #
-# Projects v2 is GraphQL-only and lives outside the repository, so the default
-# GITHUB_TOKEN cannot write to it. Store a fine-grained PAT with Projects
-# read/write as the PROJECTS_TOKEN secret; the fallback below is there so the
-# default token is at least attempted first.
+# Projects v2 is GraphQL-only and lives outside the repository. The default
+# GITHUB_TOKEN can READ a public project but every write comes back FORBIDDEN
+# ("Resource not accessible by integration"), so PROJECTS_TOKEN must hold a
+# PAT (classic) with the `project` and `repo` scopes. A fine-grained PAT does
+# not work here: its Projects permission is only offered under the
+# Organizations tab, so a user-owned project cannot be granted at all.
+# The fallback below exists so a missing secret fails with a clear message
+# rather than a confusing permissions error.
 
 on:
   issues:
@@ -80,7 +84,16 @@ jobs:
             echo "No PROJECTS_TOKEN secret set; falling back to the default GITHUB_TOKEN."
           fi
 
-          # Look up the project, its Status field, and that field's options.
+          # Every failure below is reported against the specific call that
+          # failed, so a broken run says which capability is missing rather
+          # than just surfacing a bare gh error.
+          pat_hint() {
+            if [ "$USING_PAT" != "true" ]; then
+              echo "::error::The default GITHUB_TOKEN can read a public project but cannot write to one. Create a PAT (classic) with the 'project' and 'repo' scopes and store it as the PROJECTS_TOKEN secret. A fine-grained PAT will not work for a user-owned project."
+            fi
+          }
+
+          # 1. Read the project, its Status field, and that field's options.
           if ! project=$(gh api graphql -f login="$PROJECT_OWNER" -F number="$PROJECT_NUMBER" -f field="$STATUS_FIELD" -f query='
             query($login: String!, $number: Int!, $field: String!) {
               user(login: $login) {
@@ -92,20 +105,24 @@ jobs:
                 }
               }
             }' 2>&1); then
-            echo "::error::Could not read project #$PROJECT_NUMBER as $PROJECT_OWNER."
+            echo "::error::Could not read project #$PROJECT_NUMBER owned by $PROJECT_OWNER."
             echo "$project"
-            if [ "$USING_PAT" != "true" ]; then
-              echo "::error::The default GITHUB_TOKEN is scoped to this repository and cannot reach user-level Projects. Create a fine-grained PAT with Projects read/write and store it as the PROJECTS_TOKEN secret."
-            fi
+            pat_hint
             exit 1
           fi
 
           project_id=$(jq -r '.data.user.projectV2.id' <<<"$project")
           field_id=$(jq -r '.data.user.projectV2.field.id' <<<"$project")
+          if [ "$project_id" = "null" ]; then
+            echo "::error::Project #$PROJECT_NUMBER owned by $PROJECT_OWNER came back empty. The token can see the API but not this project."
+            pat_hint
+            exit 1
+          fi
           if [ "$field_id" = "null" ]; then
             echo "::error::No single-select field named '$STATUS_FIELD' on the board."
             exit 1
           fi
+          echo "Read project #$PROJECT_NUMBER and its $STATUS_FIELD field."
 
           # Match the label suffix against the option names, case-insensitively.
           option_id=$(jq -r --arg want "$TARGET_STATUS" '
@@ -117,17 +134,31 @@ jobs:
             exit 1
           fi
 
-          content_id=$(gh api "repos/$REPO/issues/$ISSUE" --jq .node_id)
+          # 2. Resolve the issue's node ID.
+          if ! content_id=$(gh api "repos/$REPO/issues/$ISSUE" --jq .node_id 2>&1); then
+            echo "::error::Could not read issue #$ISSUE in $REPO."
+            echo "$content_id"
+            exit 1
+          fi
+          echo "Resolved issue #$ISSUE."
 
-          # Adding an item already on the board returns the existing item.
-          item_id=$(gh api graphql -f project="$project_id" -f content="$content_id" -f query='
+          # 3. Add the issue to the board. Adding an item that is already
+          #    there returns the existing item, so this is idempotent.
+          if ! item_id=$(gh api graphql -f project="$project_id" -f content="$content_id" -f query='
             mutation($project: ID!, $content: ID!) {
               addProjectV2ItemById(input: { projectId: $project, contentId: $content }) {
                 item { id }
               }
-            }' --jq '.data.addProjectV2ItemById.item.id')
+            }' --jq '.data.addProjectV2ItemById.item.id' 2>&1); then
+            echo "::error::Could not add issue #$ISSUE to the board (addProjectV2ItemById)."
+            echo "$item_id"
+            pat_hint
+            exit 1
+          fi
+          echo "Board item: $item_id"
 
-          gh api graphql -f project="$project_id" -f item="$item_id" -f field="$field_id" -f option="$option_id" -f query='
+          # 4. Set the Status field on that item.
+          if ! result=$(gh api graphql -f project="$project_id" -f item="$item_id" -f field="$field_id" -f option="$option_id" -f query='
             mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) {
               updateProjectV2ItemFieldValue(input: {
                 projectId: $project
@@ -135,6 +166,11 @@ jobs:
                 fieldId: $field
                 value: { singleSelectOptionId: $option }
               }) { projectV2Item { id } }
-            }' > /dev/null
+            }' 2>&1); then
+            echo "::error::Could not set $STATUS_FIELD on the board item (updateProjectV2ItemFieldValue)."
+            echo "$result"
+            pat_hint
+            exit 1
+          fi
 
           echo "Issue #$ISSUE -> $STATUS_FIELD: $TARGET_STATUS"

@@ -54,14 +54,25 @@ them yourself:
 
 - **The workflow must be on the default branch.** Workflows triggered by
   `issues` events only run from the default branch.
-- **A `PROJECTS_TOKEN` secret must exist**: a fine-grained PAT with Projects
-  read/write. The default `GITHUB_TOKEN` is minted per-repository and cannot
-  reach a user-level project — per GitHub's docs, "GITHUB_TOKEN is scoped to
-  the repository level and cannot access projects." The `repository-projects`
-  permission it does carry is for the old classic project boards, not Projects
-  v2. The workflow falls back to `GITHUB_TOKEN` when the secret is absent and
-  reports in its log which token it used, so a failing run tells you which case
-  you are in.
+- **A `PROJECTS_TOKEN` secret must exist**: a **personal access token
+  (classic)** with the `project` and `repo` scopes. Do not reach for a
+  fine-grained PAT — its Projects permission is exposed only under the
+  *Organizations* tab, so for a user-owned project like this one it cannot be
+  granted, and an account with no organizations has no way to set it at all.
+  The split in what the default token can do is narrower than GitHub's docs
+  suggest, and worth knowing exactly, because it was measured on this board
+  rather than assumed:
+
+  - **Reads work** with the default `GITHUB_TOKEN`, because this project is
+    public. A run with no secret logs `Read project #1 and its Status field.`
+  - **Writes do not.** `addProjectV2ItemById` returns
+    `{"type":"FORBIDDEN","message":"Resource not accessible by integration"}`.
+
+  So a workflow that only inspects the board may run unauthenticated, but
+  anything that moves an item needs the PAT. The `repository-projects`
+  permission `GITHUB_TOKEN` carries is for the old classic project boards, not
+  Projects v2, and does not help. The workflow falls back to `GITHUB_TOKEN`
+  when the secret is absent and names the failing operation in its log.
 
 Configuration lives in the `env:` block at the top of the workflow:
 `PROJECT_OWNER`, `PROJECT_NUMBER`, `STATUS_FIELD`, `LABEL_PREFIX`. A
