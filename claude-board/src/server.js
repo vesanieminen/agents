@@ -89,12 +89,15 @@ export function createServer({ cfg, store, syncer, log = () => {} }) {
     reply(res, 404, { error: 'not found' });
   });
 
-  // Stale sweep + waiting-minutes refresh, once a minute.
+  // Stale sweep once a minute; the Waiting (min) field is refreshed every fifth
+  // sweep so a long Needs-you queue costs one small mutation per session per 5 min.
+  let sweeps = 0;
   const sweep = setInterval(() => {
     const now = Date.now();
+    sweeps++;
     const changed = sweepStale(store.sessions, now, cfg.staleMin * 60000);
     for (const id of changed) { store.put(store.get(id)); syncer.markDirty(id); log(`stale: ${id.slice(0, 8)}`); }
-    for (const s of store.list()) if (s.status === 'needs_you') syncer.markDirty(s.id);
+    if (sweeps % 5 === 0) for (const s of store.list()) if (s.status === 'needs_you') syncer.markDirty(s.id);
     store.prune(now, 7 * 24 * 3600 * 1000);
     if (changed.length) broadcast();
   }, 60000);

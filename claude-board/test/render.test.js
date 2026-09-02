@@ -48,7 +48,7 @@ test('needs_you body shows waiting minutes and the notification', () => {
   let s = apply(null, ev('UserPromptSubmit', { prompt: 'x' }), T0);
   s = apply(s, ev('Notification', { notification_type: 'permission_prompt', message: 'Claude needs your permission to use Bash' }), T0);
   const b = body(s, { now: T0 + 7 * 60000 });
-  assert.ok(b.includes('waiting **7 min**'));
+  assert.ok(/waiting since \*\*2023-11-14 22:13Z\*\*/.test(b), b.split('\n')[1]);
   assert.ok(b.includes('Claude needs your permission to use Bash'));
 });
 

@@ -74,7 +74,7 @@ export function body(s, { now = Date.now(), issueRepo = '' } = {}) {
   const meta = STATUS_META[s.status] || STATUS_META.working;
   const out = [];
   out.push(`<!-- claude-board:session=${s.id} -->`);
-  const waiting = s.status === 'needs_you' && s.blockedSince ? ` · waiting **${mins(s.blockedSince, now)} min**` : '';
+  const waiting = s.status === 'needs_you' && s.blockedSince ? ` · waiting since **${fmtTime(s.blockedSince)}**` : '';
   out.push(`> **${meta.emoji} ${meta.label}**${waiting} · ${s.surface} · last event ${fmtTime(s.lastEventAt)}`);
   out.push('');
   out.push('## Resume');

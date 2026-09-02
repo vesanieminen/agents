@@ -12,7 +12,8 @@ export class Syncer {
     this.gh = gh; this.cfg = cfg; this.store = store; this.project = project; this.log = log; this.onSynced = onSynced;
     this.dirty = new Set();
     this.backoff = new Map();     // id -> nextTryAt
-    this.hashes = new Map();      // id -> last synced hash
+    this.hashes = new Map();      // id -> last synced issue hash (title/body/labels/state)
+    this.sentFields = new Map();  // id -> { fieldId: JSON(value) } last written to the board
     this.knownLabels = new Set();
     this.timer = null;
     this.inFlight = false;
@@ -53,7 +54,7 @@ export class Syncer {
     if (optId && s.status !== 'closed') vals.push({ fieldId: p.status.id, value: { singleSelectOptionId: optId } });
     const c = p.custom;
     const push = (name, value) => { if (c[name]) vals.push({ fieldId: c[name], value }); };
-    push('Waiting (min)', { number: s.status === 'needs_you' && s.blockedSince ? Math.round((now - s.blockedSince) / 60000) : 0 });
+    push('Waiting (min)', { number: s.status === 'needs_you' && s.blockedSince ? Math.floor((now - s.blockedSince) / 60000) : 0 });
     push('Last activity', { text: new Date(s.lastEventAt).toISOString() });
     push('Turns', { number: s.turnCount });
     push('Files touched', { number: Object.keys(s.files).length });
@@ -70,20 +71,32 @@ export class Syncer {
     }
   }
 
+  /** Field values not yet written with these exact values. */
+  changedFields(s, fv) {
+    const sent = this.sentFields.get(s.id) || {};
+    return fv.filter(v => sent[v.fieldId] !== JSON.stringify(v.value));
+  }
+  rememberFields(s, fv) {
+    const sent = { ...(this.sentFields.get(s.id) || {}) };
+    for (const v of fv) sent[v.fieldId] = JSON.stringify(v.value);
+    this.sentFields.set(s.id, sent);
+  }
+
   async syncOne(s, now) {
     const t = title(s), b = body(s, { now, issueRepo: this.cfg.repo }), l = labels(s);
-    const fv = this.fieldValues(s, now);
-    const hash = crypto.createHash('sha1').update(JSON.stringify([t, b, l, fv, s.status])).digest('hex');
-    if (this.hashes.get(s.id) === hash) return;
+    const issueHash = crypto.createHash('sha1').update(JSON.stringify([t, b, l, s.status])).digest('hex');
+    const issueChanged = this.hashes.get(s.id) !== issueHash || !s.issue;
+    const fv = this.changedFields(s, this.fieldValues(s, now));
+    if (!issueChanged && !fv.length) return;
 
     if (this.cfg.dryRun) {
-      this.log(`dry-run: ${s.id.slice(0, 8)} → ${t} | ${l.join(' ')} | fields=${fv.length}${s.status === 'closed' ? ' | close+archive' : ''}`);
+      this.log(`dry-run: ${s.id.slice(0, 8)} → ${issueChanged ? t + ' | ' + l.join(' ') : '(issue unchanged)'} | fields=${fv.length}${s.status === 'closed' ? ' | close+archive' : ''}`);
       if (!s.issue) { s.issue = { number: 0, url: '', nodeId: null, itemId: null, dry: true }; this.store.put(s); }
-      this.hashes.set(s.id, hash); this.onSynced(s);
+      this.hashes.set(s.id, issueHash); this.rememberFields(s, fv); this.onSynced(s);
       return;
     }
 
-    await this.ensureLabels(l);
+    if (issueChanged) await this.ensureLabels(l);
 
     if (!s.issue) {
       // Recover from a lost map before creating a duplicate.
@@ -92,7 +105,7 @@ export class Syncer {
       s.issue = { number: issue.number, url: issue.html_url, nodeId: issue.node_id, itemId: null };
       this.log(`sync: ${found ? 'recovered' : 'created'} issue #${issue.number} for ${s.id.slice(0, 8)}`);
       if (found) await this.gh.updateIssue(this.cfg.repo, issue.number, { title: t, body: b, labels: l, state: 'open' });
-    } else {
+    } else if (issueChanged) {
       const patch = { title: t, body: b, labels: l };
       if (s.status === 'closed') { patch.state = 'closed'; patch.state_reason = 'completed'; }
       await this.gh.updateIssue(this.cfg.repo, s.issue.number, patch);
@@ -101,13 +114,14 @@ export class Syncer {
     if (this.project && s.issue.nodeId) {
       if (!s.issue.itemId) s.issue.itemId = await addItem(this.gh, this.project.id, s.issue.nodeId);
       if (s.status === 'closed') {
-        await archiveItem(this.gh, this.project.id, s.issue.itemId).catch(e => this.log('sync: archive failed: ' + e.message));
-      } else {
+        if (issueChanged) await archiveItem(this.gh, this.project.id, s.issue.itemId).catch(e => this.log('sync: archive failed: ' + e.message));
+      } else if (fv.length) {
         await setItemFields(this.gh, this.project.id, s.issue.itemId, fv);
       }
     }
     this.store.put(s);
-    this.hashes.set(s.id, hash);
+    this.hashes.set(s.id, issueHash);
+    this.rememberFields(s, fv);
     this.onSynced(s);
   }
 
