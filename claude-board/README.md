@@ -23,6 +23,31 @@ inbox, sorted by the `Waiting (min)` field so the session stuck longest is on to
 
 Zero dependencies. Node 20+.
 
+## What it looks like
+
+The local dashboard, with example sessions in every column. Needs-you cards sort
+by how long they've been waiting; every card has a copy-to-clipboard resume command.
+
+![Dashboard, light theme](docs/screenshots/dashboard-light.png)
+
+![Dashboard, dark theme](docs/screenshots/dashboard-dark.png)
+
+A card opened on GitHub: the issue body the daemon maintains for the top
+Needs-you session. Shown here with approximate styling; on github.com the
+Mermaid block renders as a timeline diagram.
+
+![Issue body for a Needs-you session](docs/screenshots/issue.png)
+
+The CLI: `status` as an inbox, `doctor` checking every prerequisite (here run
+without a real token, so it points at what to fix), and the hook snippet
+`install-hooks --print` would merge into `~/.claude/settings.json`.
+
+![claude-board status](docs/screenshots/cli-status.png)
+
+![claude-board doctor](docs/screenshots/cli-doctor.png)
+
+![claude-board install-hooks --print](docs/screenshots/cli-hooks.png)
+
 ## Five-minute setup
 
 1. **Token.** Create a **classic** personal access token with the `project` and
