@@ -11,7 +11,7 @@ export function dashboardHtml() {
 header{display:flex;align-items:baseline;gap:18px;padding:18px 24px 10px;border-bottom:1px solid var(--rule)}
 h1{font:600 20px/1 "IBM Plex Sans Condensed","IBM Plex Sans",system-ui,sans-serif;margin:0;letter-spacing:-.01em}
 .meta{font:12px ui-monospace,Menlo,monospace;color:var(--muted)}.meta b{color:var(--ink);font-weight:500}
-.board{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;padding:18px 24px 40px}
+.board{display:grid;grid-template-columns:repeat(auto-fit,minmax(236px,1fr));gap:14px;padding:18px 24px 40px}
 .col h2{font:600 12px/1 ui-monospace,Menlo,monospace;letter-spacing:.1em;text-transform:uppercase;color:var(--c);margin:0 0 10px;display:flex;justify-content:space-between}
 .col h2 span{color:var(--muted)}
 .card{background:var(--surface);border:1px solid var(--rule);border-left:4px solid var(--c);padding:11px 12px 10px;margin-bottom:10px;display:flex;flex-direction:column;gap:5px}
