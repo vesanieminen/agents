@@ -25,12 +25,17 @@ Zero dependencies. Node 20+.
 
 ## What it looks like
 
-The local dashboard, with example sessions in every column. Needs-you cards sort
-by how long they've been waiting; every card has a copy-to-clipboard resume command.
+The local dashboard, with example sessions in every column. The left stripe is the
+column's status color; each project has its own color for the monogram tile, name
+and chip, so `api-server` looks the same wherever it shows up. Sessions that have
+something to show carry a thumbnail. Needs-you cards sort by how long they've been
+waiting; every card has a copy-to-clipboard resume command.
 
 ![Dashboard, light theme](docs/screenshots/dashboard-light.png)
 
 ![Dashboard, dark theme](docs/screenshots/dashboard-dark.png)
+
+![Two Needs-you cards, close up](docs/screenshots/cards-closeup.png)
 
 A card opened on GitHub: the issue body the daemon maintains for the top
 Needs-you session. Shown here with approximate styling; on github.com the
@@ -109,6 +114,47 @@ Emoji is the one color that renders everywhere; it updates on every state change
 
 Card faces never render images from the body. If you want screenshots at a
 glance, that's what the local dashboard is for.
+
+## Project colors
+
+Every repository gets a color derived from its name, the same on both surfaces:
+on GitHub it's the color of the `repo:<name>` label, on the dashboard it's the
+monogram tile, the repo name and the project chip. Status stays the dominant
+signal (column, left stripe, title emoji); project color is the second glance
+that tells two Working cards apart. No configuration — `api-server` is the same
+hue on every machine.
+
+## Thumbnails
+
+A session can carry an image, shown full-width on its dashboard card. Card faces
+on GitHub never render images, so this is dashboard-first; the issue body embeds
+it only when a public URL is known (`thumbnailUrl`), which nothing sets today.
+
+Three ways a thumbnail gets set, in the order you'll use them:
+
+1. **The agent decides.** If a session writes `.claude-board/thumbnail.png` (or
+   `.jpg` / `.webp`) inside its working directory, the `PostToolUse` hook already
+   installed notices the write and the daemon picks the file up. Add one line to
+   a project's `CLAUDE.md` — *"when you have built something visual, save a
+   screenshot to `.claude-board/thumbnail.png`"* — and agents working on UI will
+   do it while agents refactoring a parser won't. Add `.claude-board/` to that
+   project's `.gitignore`.
+
+2. **Anything with curl.** A skill, a hook command, or the agent itself:
+
+   ```bash
+   curl -X POST -H 'Content-Type: image/png' --data-binary @shot.png \
+     http://127.0.0.1:7777/sessions/<session_id>/thumbnail
+   ```
+
+   Same auth rule as `/event`: loopback is open, anything else needs the bearer.
+   Up to 3 MB; PNG, JPEG or WebP.
+
+3. **Capture on Stop.** Not built in — every project's dev server is different.
+   A `Stop` command hook that runs `playwright screenshot <url> .claude-board/thumbnail.png`
+   gets you there in two lines, and route 1 takes over from there.
+
+Thumbnails live in `~/.claude-board/thumbs/` and are served at `/thumbs/<file>`.
 
 ## Talk back to a session
 

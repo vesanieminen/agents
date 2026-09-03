@@ -45,6 +45,9 @@ export function newSession(id, now) {
     tasks: [],          // {id, description, done}
     notifications: [],  // {type, message, at}
     issue: null,        // {number, url, nodeId, itemId}
+    thumbnail: null,    // file name under <dataDir>/thumbs, served at /thumbs/<file>
+    thumbnailAt: null,
+    thumbnailUrl: null, // public URL when one exists (for the issue body)
     lastSeenCommentAt: null,
   };
 }
