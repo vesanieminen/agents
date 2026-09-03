@@ -1,4 +1,5 @@
 import { STATUS_META } from './machine.js';
+import { projectHex } from './color.js';
 
 const clip = (s, n) => {
   if (!s) return '';
@@ -44,8 +45,9 @@ export function labelDef(name) {
     const meta = STATUS_META[key];
     return { name, color: meta ? meta.hex : '6B7280', description: meta ? `Session is ${meta.label.toLowerCase()}` : '' };
   }
-  const palette = { repo: '0E7490', surface: '4B5563', mode: '7C3AED', model: '0F766E' };
-  const desc = { repo: 'Repository the session is working in', surface: 'Where the session runs', mode: 'Permission mode', model: 'Model' };
+  if (kind === 'repo') return { name, color: projectHex(val), description: `Repository: ${val}` };
+  const palette = { surface: '4B5563', mode: '7C3AED', model: '0F766E' };
+  const desc = { surface: 'Where the session runs', mode: 'Permission mode', model: 'Model' };
   return { name, color: palette[kind] || '6B7280', description: desc[kind] || '' };
 }
 
@@ -90,6 +92,7 @@ export function body(s, { now = Date.now(), issueRepo = '' } = {}) {
   }
   if (s.cwd) out.push(`\`cd ${s.cwd}\``);
   out.push('');
+  if (s.thumbnailUrl) { out.push(`![Latest screenshot](${s.thumbnailUrl})`); out.push(''); }
   out.push('## Current task');
   out.push(s.currentPrompt ? quote(clip(s.currentPrompt, 1500)) : '_No prompt received yet._');
   out.push('');

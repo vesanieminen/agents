@@ -1,13 +1,21 @@
 import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
 import { apply, sweepStale } from './machine.js';
 import { gitInfo } from './git.js';
 import { dashboardHtml } from './dashboard.js';
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+const IMAGE_TYPES = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' };
+const IMAGE_EXT = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' };
+const THUMB_CONVENTION = /[\\/]\.claude-board[\\/]thumbnail\.(png|jpe?g|webp)$/i;
+const MAX_THUMB = 3 * 1024 * 1024;
 
 /**
  * The daemon's HTTP surface:
  *   POST /event         hook receiver (Claude Code http hooks)
+ *   POST /sessions/:id/thumbnail   image body (png/jpeg/webp) → card thumbnail
+ *   GET  /thumbs/:file  thumbnails
  *   GET  /              dashboard
  *   GET  /events        SSE stream of full state
  *   GET  /api/sessions  JSON
@@ -15,6 +23,17 @@ const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
  */
 export function createServer({ cfg, store, syncer, log = () => {} }) {
   const clients = new Set();
+  const thumbDir = path.join(cfg.dataDir, 'thumbs');
+  fs.mkdirSync(thumbDir, { recursive: true });
+
+  /** Store an image for a session and point the card at it. */
+  function setThumbnail(s, buf, ext) {
+    const file = `${s.id}.${ext}`;
+    fs.writeFileSync(path.join(thumbDir, file), buf);
+    s.thumbnail = file; s.thumbnailAt = Date.now();
+    store.put(s);
+    syncer.markDirty(s.id);
+  }
 
   const snapshot = () => ({
     sessions: store.list(),
@@ -52,6 +71,18 @@ export function createServer({ cfg, store, syncer, log = () => {} }) {
     const prev = store.get(ev.session_id);
     const next = apply(prev, ev, now, { needsYou: cfg.needsYou });
     store.put(next);
+
+    // Convention: a session that writes .claude-board/thumbnail.png in its cwd sets its own card art.
+    if (ev.hook_event_name === 'PostToolUse' && ev.__surface === 'local') {
+      const fp = ev.tool_input?.file_path;
+      const m = fp && fp.match(THUMB_CONVENTION);
+      if (m && fs.existsSync(fp)) {
+        try {
+          const st = fs.statSync(fp);
+          if (st.size <= MAX_THUMB) { setThumbnail(next, fs.readFileSync(fp), m[1].toLowerCase().replace('jpeg', 'jpg')); log(`thumbnail: ${next.id.slice(0, 8)} from ${fp}`); }
+        } catch (e) { log('thumbnail: ' + e.message); }
+      }
+    }
     syncer.markDirty(next.id);
     broadcast();
     log(`event: ${ev.hook_event_name}${ev.notification_type ? '/' + ev.notification_type : ''} ${next.id.slice(0, 8)} → ${next.status}`);
@@ -72,6 +103,26 @@ export function createServer({ cfg, store, syncer, log = () => {} }) {
       req.on('data', c => { raw += c; if (raw.length > 5e6) req.destroy(); });
       req.on('end', () => handleEvent(req, res, raw).catch(e => { log('event error: ' + e.message); reply(res, 500, { error: e.message }); }));
       return;
+    }
+    const thumbPost = req.method === 'POST' && url.pathname.match(/^\/sessions\/([^/]+)\/thumbnail$/);
+    if (thumbPost) {
+      if (!authorized(req)) return reply(res, 403, { error: 'unauthorized' });
+      const ext = IMAGE_TYPES[(req.headers['content-type'] || '').split(';')[0].trim()];
+      if (!ext) return reply(res, 415, { error: 'send image/png, image/jpeg or image/webp' });
+      const s = store.get(decodeURIComponent(thumbPost[1]));
+      if (!s) return reply(res, 404, { error: 'unknown session' });
+      const chunks = []; let size = 0;
+      req.on('data', c => { size += c.length; if (size > MAX_THUMB) { req.destroy(); return; } chunks.push(c); });
+      req.on('end', () => { setThumbnail(s, Buffer.concat(chunks), ext); broadcast(); reply(res, 200, { thumbnail: `/thumbs/${s.thumbnail}` }); });
+      return;
+    }
+    if (req.method === 'GET' && url.pathname.startsWith('/thumbs/')) {
+      const file = path.basename(url.pathname);
+      const type = IMAGE_EXT[file.split('.').pop().toLowerCase()];
+      const full = path.join(thumbDir, file);
+      if (!type || !fs.existsSync(full)) return reply(res, 404, { error: 'not found' });
+      res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-cache' });
+      return fs.createReadStream(full).pipe(res);
     }
     if (req.method === 'GET' && url.pathname === '/health') return reply(res, 200, { ok: true, sessions: store.list().length, dryRun: cfg.dryRun });
     if (req.method === 'GET' && url.pathname === '/api/sessions') return reply(res, 200, snapshot());
